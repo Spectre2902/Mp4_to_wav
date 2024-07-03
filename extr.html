@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Extract Audio from Video</title>
+</head>
+<body>
+    <h1>Extract Audio from Video</h1>
+    <input type="file" id="fileInput" accept="video/*">
+    <button onclick="extractAudio()">Extract Audio</button>
+    <audio controls id="audioElement"></audio>
+
+    <script>
+        async function extractAudio() {
+            const fileInput = document.getElementById('fileInput');
+            const audioElement = document.getElementById('audioElement');
+            const file = fileInput.files[0];
+
+            if (!file) {
+                alert('Please select a video file.');
+                return;
+            }
+
+            const arrayBuffer = await file.arrayBuffer();
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const videoBuffer = await audioContext.decodeAudioData(arrayBuffer);
+
+            const audioData = {
+                sampleRate: videoBuffer.sampleRate,
+                numberOfChannels: videoBuffer.numberOfChannels,
+                length: videoBuffer.length,
+                channelData: []
+            };
+
+            for (let channel = 0; channel < videoBuffer.numberOfChannels; channel++) {
+                audioData.channelData.push(videoBuffer.getChannelData(channel));
+            }
+
+            const audioBlob = await bufferToWaveBlob(audioData);
+            const audioUrl = URL.createObjectURL(audioBlob);
+            audioElement.src = audioUrl;
+            audioElement.style.display = 'block';
+
+            downloadAudio(audioBlob, 'extracted_audio.wav');
+        }
+
+        function bufferToWaveBlob(audioData) {
+            return new Promise((resolve) => {
+                const workerCode = `
+                    onmessage = function(event) {
+                        const audioData = event.data;
+                        const numberOfChannels = audioData.numberOfChannels;
+                        const length = audioData.length * numberOfChannels * 2 + 44;
+                        const result = new Uint8Array(length);
+                        const view = new DataView(result.buffer);
+
+                        function writeString(view, offset, string) {
+                            for (let i = 0; i < string.length; i++) {
+                                view.setUint8(offset + i, string.charCodeAt(i));
+                            }
+                        }
+
+                        let offset = 0;
+                        writeString(view, offset, 'RIFF'); offset += 4;
+                        view.setUint32(offset, 36 + audioData.length * 2 * numberOfChannels, true); offset += 4;
+                        writeString(view, offset, 'WAVE'); offset += 4;
+                        writeString(view, offset, 'fmt '); offset += 4;
+                        view.setUint32(offset, 16, true); offset += 4;
+                        view.setUint16(offset, 1, true); offset += 2;
+                        view.setUint16(offset, numberOfChannels, true); offset += 2;
+                        view.setUint32(offset, audioData.sampleRate, true); offset += 4;
+                        view.setUint32(offset, audioData.sampleRate * 2 * numberOfChannels, true); offset += 4;
+                        view.setUint16(offset, numberOfChannels * 2, true); offset += 2;
+                        view.setUint16(offset, 16, true); offset += 2;
+                        writeString(view, offset, 'data'); offset += 4;
+                        view.setUint32(offset, audioData.length * 2 * numberOfChannels, true); offset += 4;
+
+                        for (let i = 0; i < audioData.length; i++) {
+                            for (let channel = 0; channel < numberOfChannels; channel++) {
+                                const sample = audioData.channelData[channel][i] * 0x7fff;
+                                view.setInt16(offset, sample < 0 ? sample : sample, true);
+                                offset += 2;
+                            }
+                        }
+
+                        postMessage(new Blob([result], { type: 'audio/wav' }));
+                    }
+                `;
+                
+                const workerBlob = new Blob([workerCode], { type: 'application/javascript' });
+                const worker = new Worker(URL.createObjectURL(workerBlob));
+
+                worker.onmessage = function(event) {
+                    resolve(event.data);
+                    worker.terminate();
+                };
+
+                worker.postMessage(audioData);
+            });
+        }
+
+        function downloadAudio(blob, filename) {
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = filename;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+    </script>
+</body>
+</html>
